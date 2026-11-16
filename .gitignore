@@ -1,0 +1,5 @@
+github-core-clone-01-kit/
+requirements-github-core-clone-01.json
+*.tar.gz
+*.log
+node_modules/
