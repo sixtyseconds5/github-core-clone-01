@@ -59,18 +59,42 @@ function isAuthorized(request: IncomingMessage): boolean {
   return true;
 }
 
+/** True when the request carries a body: a positive content-length or a transfer-encoding. */
+function hasRequestBody(request: IncomingMessage): boolean {
+  const length = request.headers['content-length'];
+  if (length !== undefined && length !== '' && Number(length) > 0) return true;
+  const encoding = request.headers['transfer-encoding'];
+  return encoding !== undefined && encoding !== '';
+}
+
+/**
+ * Split a request target into its path segments without building a URL
+ * object: the suite's targets are origin-form paths, and `new URL()` per
+ * request is pure overhead on the timed read workload (2,000 sequential
+ * GETs). Absolute-form targets fall back to URL parsing.
+ */
+function splitTarget(rawUrl: string): { segments: string[]; pathname: string; queryString: string } {
+  if (/^https?:\/\//i.test(rawUrl)) {
+    const parsed = new URL(rawUrl);
+    return { segments: parsed.pathname.split('/').filter(Boolean), pathname: parsed.pathname, queryString: parsed.search.slice(1) };
+  }
+  const q = rawUrl.indexOf('?');
+  const pathname = q < 0 ? rawUrl : rawUrl.slice(0, q);
+  return { segments: pathname.split('/').filter(Boolean), pathname, queryString: q < 0 ? '' : rawUrl.slice(q + 1) };
+}
+
 export function createApp(): Server {
   const store = new ForgeStore();
   const server = createServer((request, response) => {
     void (async () => {
       const requestId = store.nextRequestId();
       try {
-        const url = new URL(request.url ?? '/', `http://${request.headers.host ?? '127.0.0.1'}`);
+        const { segments, pathname, queryString } = splitTarget(request.url ?? '/');
+        const query = (): URLSearchParams => new URLSearchParams(queryString);
         const method = (request.method ?? 'GET').toUpperCase();
-        const segments = url.pathname.split('/').filter(Boolean);
         const baseUrl = `http://${request.headers.host ?? '127.0.0.1'}`;
 
-        if (method === 'GET' && url.pathname === '/healthz') {
+        if (method === 'GET' && pathname === '/healthz') {
           send(response, 200, 'application/json', Buffer.from(JSON.stringify({ ok: true }), 'utf8'), { 'X-GitHub-Request-Id': requestId });
           return;
         }
@@ -80,7 +104,9 @@ export function createApp(): Server {
           return;
         }
 
-        const body = await readBody(request);
+        // Body-less requests (every GET on the timed workloads) skip the
+        // stream read entirely: waiting for 'end' costs a tick per request.
+        const body = hasRequestBody(request) ? await readBody(request) : Buffer.alloc(0);
 
         // Git smart HTTP: /{owner}/{repo}.git/info/refs | git-upload-pack | git-receive-pack
         if (segments.length >= 2 && segments[1]?.endsWith('.git')) {
@@ -93,7 +119,7 @@ export function createApp(): Server {
           }
           const gitPath = segments.slice(2).join('/');
           if (method === 'GET' && gitPath === 'info/refs') {
-            const result = handleInfoRefs(store, repo, url.searchParams.get('service'), request.headers['git-protocol'] ?? null);
+            const result = handleInfoRefs(store, repo, query().get('service'), request.headers['git-protocol'] ?? null);
             send(response, result.status, result.contentType, result.body, { 'X-GitHub-Request-Id': requestId });
             return;
           }
@@ -121,7 +147,7 @@ export function createApp(): Server {
             store,
             method,
             segments: segments.slice(2),
-            query: url.searchParams,
+            query: query(),
             baseUrl,
             rawBody: body,
           });

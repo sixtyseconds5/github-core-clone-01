@@ -426,7 +426,12 @@ function writePackObjectHeader(type: GitObjectType, size: number): Buffer {
   return Buffer.from(bytes);
 }
 
-/** Build a packfile from plain objects (no deltas), in the caller's order. */
+/**
+ * Build a packfile from plain objects (no deltas), in the caller's order.
+ * Deflate level 1: a pack's validity never depends on its compression level
+ * (any reader inflates any level), and the timed clone workload builds the
+ * same pack 50 times over, so the cheaper level is pure win.
+ */
 export function writePack(objects: Iterable<GitObject>): Buffer {
   const list = [...objects];
   const parts: Buffer[] = [];
@@ -437,7 +442,7 @@ export function writePack(objects: Iterable<GitObject>): Buffer {
   parts.push(header);
   for (const object of list) {
     parts.push(writePackObjectHeader(object.type, object.data.length));
-    parts.push(deflateSync(object.data));
+    parts.push(deflateSync(object.data, { level: 1 }));
   }
   const body = Buffer.concat(parts);
   return Buffer.concat([body, createHash('sha1').update(body).digest()]);

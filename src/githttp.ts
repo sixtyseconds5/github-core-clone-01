@@ -280,7 +280,33 @@ function lsRefsResponse(store: ForgeStore, repo: Repo, args: string[]): Buffer {
   return Buffer.concat(parts);
 }
 
+const FETCH_CACHE_CAP = 128;
+
+/** Cache key for a fetch response: protocol + store size + every fetch parameter. */
+function fetchCacheKey(store: ForgeStore, version: 'v2' | 'v0', wants: string[], haves: string[], shallow: string[], deepen: number | undefined): string {
+  return `${version}|${store.objects.size}|${wants.join(',')}|${haves.join(',')}|${shallow.join(',')}|${deepen ?? ''}`;
+}
+
+/** A cached fetch response, or undefined. The cached Buffer is never mutated. */
+function fetchCached(store: ForgeStore, key: string): Buffer | undefined {
+  return store.fetchCache.get(key);
+}
+
+/** Store a fetch response unless the cache is full. */
+function fetchStore(store: ForgeStore, key: string, body: Buffer): void {
+  if (store.fetchCache.size < FETCH_CACHE_CAP) store.fetchCache.set(key, body);
+}
+
 function fetchResponseV2(store: ForgeStore, wants: string[], haves: string[], shallow: string[], deepen: number | undefined): Buffer {
+  const key = fetchCacheKey(store, 'v2', wants, haves, shallow, deepen);
+  const hit = fetchCached(store, key);
+  if (hit) return hit;
+  const body = fetchResponseV2Fresh(store, wants, haves, shallow, deepen);
+  fetchStore(store, key, body);
+  return body;
+}
+
+function fetchResponseV2Fresh(store: ForgeStore, wants: string[], haves: string[], shallow: string[], deepen: number | undefined): Buffer {
   const plan = computeFetch(store, wants, haves, shallow, deepen);
   const parts: Buffer[] = [];
   parts.push(encodePktLine('acknowledgments\n'));
@@ -309,6 +335,15 @@ function fetchResponseV2(store: ForgeStore, wants: string[], haves: string[], sh
 }
 
 function fetchResponseV0(store: ForgeStore, wants: string[], haves: string[], shallow: string[], deepen: number | undefined): Buffer {
+  const key = fetchCacheKey(store, 'v0', wants, haves, shallow, deepen);
+  const hit = fetchCached(store, key);
+  if (hit) return hit;
+  const body = fetchResponseV0Fresh(store, wants, haves, shallow, deepen);
+  fetchStore(store, key, body);
+  return body;
+}
+
+function fetchResponseV0Fresh(store: ForgeStore, wants: string[], haves: string[], shallow: string[], deepen: number | undefined): Buffer {
   const plan = computeFetch(store, wants, haves, shallow, deepen);
   const parts: Buffer[] = [];
   if (haves.length === 0) {

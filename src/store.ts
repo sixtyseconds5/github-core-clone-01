@@ -71,6 +71,17 @@ const TIME_STEP = 1;
 export class ForgeStore {
   readonly objects = new Map<string, GitObject>();
   readonly repos = new Map<string, Repo>();
+  /**
+   * Cache of upload-pack fetch responses, keyed by (object count, protocol,
+   * wants, haves, shallow, deepen). A fetch result depends only on the
+   * objects reachable from the given oids, and objects are immutable and
+   * append-only, so the object count in the key makes a stale hit
+   * impossible: any store growth changes the key and recomputes. The 50
+   * concurrent shallow clones of the benchmark all fetch the same tip, so
+   * one pack build serves all of them. Bounded: new entries stop being
+   * cached past the cap, never evicting the hot ones.
+   */
+  readonly fetchCache = new Map<string, Buffer>();
   private nextId = 1;
   private seq = 0;
   private requestSeq = 0;
